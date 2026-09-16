@@ -801,7 +801,7 @@ const proxyRoutes = [
                     for (let i = 0; i < items.length; i++) {
                         let item = items[i];
                         if (
-                            item.entryId.includes("-tweet-") &&
+                            (item.entryId.startsWith("tweet-") || item.entryId.includes("-tweet-")) &&
                             !item.entryId.includes("promoted")
                         ) {
                             let res = item.item.itemContent.tweet_results.result;
@@ -973,7 +973,7 @@ const proxyRoutes = [
                     let lt = e.content.items;
                     for (let i = 0; i < lt.length; i++) {
                         let t = lt[i];
-                        if (t.entryId.includes("-tweet-")) {
+                        if (t.entryId.startsWith("tweet-") || t.entryId.includes("-tweet-")) {
                             let res = t.item.itemContent.tweet_results.result;
                             let tweet = parseTweet(res);
                             if (!tweet) continue;
@@ -1143,7 +1143,7 @@ const proxyRoutes = [
                     for (let i = 0; i < items.length; i++) {
                         let item = items[i];
                         let result = item.item.itemContent.tweet_results.result;
-                        if (item.entryId.includes("-tweet-")) {
+                        if (item.entryId.startsWith("tweet-") || item.entryId.includes("-tweet-")) {
                             let tweet = parseTweet(result);
                             if (tweet && tweet.user.id_str === xhr.storage.user_id) {
                                 tweets.push(tweet);
@@ -1289,7 +1289,7 @@ const proxyRoutes = [
                     for (let i = 0; i < items.length; i++) {
                         let item = items[i];
                         let result = item.item.itemContent.tweet_results.result;
-                        if (item.entryId.includes("-tweet-")) {
+                        if (item.entryId.startsWith("tweet-") || item.entryId.includes("-tweet-")) {
                             let tweet = parseTweet(result);
                             if (tweet && tweet.user.id_str === xhr.storage.user_id) {
                                 tweets.push(tweet);
