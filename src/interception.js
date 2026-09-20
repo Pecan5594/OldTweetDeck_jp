@@ -208,7 +208,10 @@ function parseTweet(res) {
         let result = res.core.user_results.result;
         tweet.conversation_id = +tweet.conversation_id_str;
         tweet.text = tweet.full_text;
-        tweet.user = result.legacy;
+        // X is migrating user fields out of `legacy` into `core`/`avatar`/etc,
+        // so `legacy` can now be missing entirely. The fallbacks below already
+        // repopulate name/screen_name/avatar/created_at from the new shape.
+        tweet.user = result.legacy || {};
         tweet.user.id = +tweet.user_id_str;
         tweet.user.id_str = tweet.user_id_str;
         if (result.is_blue_verified) {
