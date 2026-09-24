@@ -41,6 +41,7 @@ docs/grok-translation-probe.js  x.com の Grok 翻訳の確認用スクリプト
   ```
 
   押すと青い **「翻訳 ON」** になり、そのカラムだけで日本語以外のツイートが翻訳文に置き換わります（引用ツイートも含む）。もう一度押すとオフになり、原文に戻ります。
+- ON/OFF はカラムごとに記憶され、ページを再読み込みしても保たれます（`localStorage.OTDjpTranslateColumns` に、OldTweetDeck がカラムに付ける固定 ID で保存。TweetDeck 画面上のカラムキー `c…` は読み込みのたびに変わるため使っていません）。
 - 初回起動時は、画面右下にボタンの場所を案内するメッセージが出ます。もう一度見たい場合はコンソールで `OTDjpTranslate.hint()` を実行します。
 - ボタンが見当たらない場合は、この拡張機能が有効か、本家 OldTweetDeck が同時に有効になっていないかを確認してください。開発者コンソール（F12）に `[OTDjp] OldTweetDeck JP auto-translate ready` と出ていれば読み込まれています。
 - 翻訳文の下の「原文を表示」で原文と切り替えられます。
@@ -53,8 +54,8 @@ docs/grok-translation-probe.js  x.com の Grok 翻訳の確認用スクリプト
 ### 設定・デバッグ（開発者コンソール）
 
 ```js
-OTDjpTranslate.columns()          // 有効なカラムのキー
-OTDjpTranslate.enable("c123...")  // カラムを有効化（無効化は disable）
+OTDjpTranslate.columns()          // 有効なカラムの固定 ID（"api:…"）
+OTDjpTranslate.enable("c123...")  // 画面上のカラムキー（data-column）で有効化（無効化は disable）
 OTDjpTranslate.stats()            // キャッシュ件数・キュー状況・Grok 翻訳の取得件数（grok）
 OTDjpTranslate.clearCache()       // キャッシュを消去
 localStorage.OTDjpTranslateTarget = "ja"  // 翻訳先言語（既定 ja）
