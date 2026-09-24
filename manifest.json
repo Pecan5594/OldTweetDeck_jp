@@ -1,9 +1,10 @@
 {
-    "name": "OldTweetDeck",
-    "description": "Returns old TweetDeck!",
+    "name": "OldTweetDeck JP (自動翻訳版)",
+    "short_name": "OTD JP",
+    "description": "OldTweetDeck の日本語カスタマイズ版（カラム単位の自動翻訳付き）。本家 OldTweetDeck とは別物です。",
     "version": "4.4.0",
     "manifest_version": 3,
-    "homepage_url": "https://github.com/dimdenGD/OldTweetDeck",
+    "homepage_url": "https://github.com/Pecan5594/OldTweetDeck_jp",
     "permissions": [
         "webNavigation",
         "cookies",

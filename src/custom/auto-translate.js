@@ -3,7 +3,7 @@
 // Loaded by src/injection.js from the extension package (see src/custom/scripts.json),
 // so it is never overwritten by the remote interception.js / bundle.js updates.
 //
-// - Adds a "訳" toggle button to every column header. Translation runs only in columns
+// - Adds a "翻訳 OFF/ON" toggle button to every column header (left of the settings icon). Translation runs only in columns
 //   where it is switched on (stored in localStorage.OTDjpTranslateColumns).
 // - Uses TweetDeck's own translateTweet() -> /1.1/translations/show.json, which
 //   interception.js proxies to X's translation service (the same one behind "Translate post").
@@ -14,6 +14,7 @@
     const COLUMNS_KEY = "OTDjpTranslateColumns";
     const CACHE_KEY = "OTDjpTranslateCache";
     const TARGET_KEY = "OTDjpTranslateTarget";
+    const HINT_KEY = "OTDjpTranslateHintShown";
     const CACHE_MAX = 3000;
     const CONCURRENCY = 2;
     const REQUEST_INTERVAL = 400;
@@ -249,7 +250,10 @@
     function updateButton(btn, key) {
         const on = enabledColumns.has(key);
         btn.classList.toggle("is-active", on);
-        btn.title = on ? "自動翻訳: オン（クリックでオフ）" : "自動翻訳: オフ（クリックでオン）";
+        btn.textContent = on ? "翻訳 ON" : "翻訳 OFF";
+        btn.title = on
+            ? "このカラムの自動翻訳: オン（クリックでオフ）"
+            : "このカラムの自動翻訳: オフ（クリックでオン）";
     }
 
     function ensureButtons() {
@@ -259,8 +263,7 @@
             const key = column.getAttribute("data-column");
             const btn = document.createElement("a");
             btn.href = "#";
-            btn.className = "column-header-link otdjp-translate-btn";
-            btn.textContent = "訳";
+            btn.className = "otdjp-translate-btn";
             btn.addEventListener("click", e => {
                 e.preventDefault();
                 e.stopPropagation();
@@ -357,13 +360,52 @@
     function injectStyle() {
         const style = document.createElement("style");
         style.textContent = `
-            .otdjp-translate-btn { font-weight: bold; font-size: 13px; line-height: 20px; opacity: .45; }
-            .otdjp-translate-btn:hover { opacity: .8; }
-            .otdjp-translate-btn.is-active { opacity: 1; color: #1d9bf0 !important; }
+            .otdjp-translate-btn {
+                display: inline-block; vertical-align: middle; margin: 0 6px 0 4px; padding: 1px 7px;
+                border: 1px solid #8899a6; border-radius: 10px;
+                font-size: 11px; font-weight: bold; line-height: 16px; white-space: nowrap;
+                color: #8899a6 !important; text-decoration: none !important; cursor: pointer;
+            }
+            .otdjp-translate-btn:hover { border-color: #1d9bf0; color: #1d9bf0 !important; }
+            .otdjp-translate-btn.is-active { background: #1d9bf0; border-color: #1d9bf0; color: #fff !important; }
+            .otdjp-hint {
+                position: fixed; right: 16px; bottom: 16px; z-index: 10000; max-width: 360px;
+                padding: 12px 14px; border-radius: 8px; background: #15202b; color: #fff;
+                font-size: 13px; line-height: 19px; box-shadow: 0 4px 16px rgba(0,0,0,.4);
+            }
+            .otdjp-hint b { color: #1d9bf0; }
+            .otdjp-hint button {
+                margin-top: 8px; padding: 2px 10px; border: 0; border-radius: 10px;
+                background: #1d9bf0; color: #fff; cursor: pointer;
+            }
+            .otdjp-translate-btn.is-flash { box-shadow: 0 0 0 3px #ffad1f; }
             .otdjp-translate-note { font-size: 12px; line-height: 16px; color: #8899a6; margin-top: 2px; }
             .otdjp-translate-note a { color: #1d9bf0; }
         `;
         document.head.appendChild(style);
+    }
+
+    // First-run hint that points at the header buttons.
+    function showHint(force) {
+        if (!force && localStorage.getItem(HINT_KEY)) return;
+        const hint = document.createElement("div");
+        hint.className = "otdjp-hint";
+        hint.innerHTML = `<b>OldTweetDeck JP</b><br>各カラムの見出し右上（設定アイコンの左）にある
+            <b>「翻訳 OFF」</b>ボタンを押すと、そのカラムの日本語以外のツイートが自動で翻訳されます。<br>
+            <button type="button">わかった</button>`;
+        hint.querySelector("button").addEventListener("click", () => {
+            try { localStorage.setItem(HINT_KEY, "1"); } catch (e) {}
+            hint.remove();
+            flashButtons(false);
+        });
+        document.body.appendChild(hint);
+        flashButtons(true);
+    }
+
+    function flashButtons(on) {
+        for (const btn of document.querySelectorAll(".otdjp-translate-btn")) {
+            btn.classList.toggle("is-flash", on);
+        }
     }
 
     function init() {
@@ -372,13 +414,15 @@
         new MutationObserver(scheduleScan).observe(document.body, { childList: true, subtree: true });
         setInterval(scheduleScan, 30 * 1000);
         scan();
-        console.log(`[OTDjp] auto-translate ready (${enabledColumns.size} column(s), ${Object.keys(cache).length} cached)`);
+        showHint();
+        console.log(`[OTDjp] OldTweetDeck JP auto-translate ready (${enabledColumns.size} column(s), ${Object.keys(cache).length} cached)`);
     }
 
     window.OTDjpTranslate = {
         enable: key => toggleColumn(key, true),
         disable: key => toggleColumn(key, false),
         columns: () => [...enabledColumns],
+        hint: () => showHint(true),
         clearCache: () => {
             cache = {};
             saveCache();

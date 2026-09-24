@@ -1,4 +1,7 @@
-# OldTweetDeck_jp カスタマイズ
+# OldTweetDeck JP カスタマイズ
+
+この拡張機能は拡張機能一覧に **「OldTweetDeck JP (自動翻訳版)」** と表示されます。本家 [OldTweetDeck](https://github.com/dimdenGD/OldTweetDeck) とは別物です。
+**本家と同時に有効にしないでください**（両方が同じページを組み立てるため、正しく動きません）。どちらか一方だけを有効にしてください。
 
 ## ファイル読み込みの仕組み
 
@@ -20,6 +23,7 @@
 src/custom/
   scripts.json        読み込むスクリプトの一覧（ここに追記する）
   auto-translate.js   カラム単位の自動翻訳
+docs/grok-translation-probe.js  x.com の Grok 翻訳の確認用スクリプト（拡張機能では使わない）
 ```
 
 - カスタマイズは `src/custom/` に置き、上流ファイルは編集しないでください。上流の変更を取り込むときの衝突は `src/injection.js` の 1 か所だけになります。
@@ -28,7 +32,17 @@ src/custom/
 
 ## 自動翻訳（auto-translate.js）
 
-- 各カラムのヘッダーに「訳」ボタンが付きます。押したカラムだけで、日本語以外のツイートが翻訳文に置き換わります（引用ツイートも含む）。
+- ボタンの位置: 各カラムの見出しの右上、スライダー型の設定アイコン（カラムオプション）の左に **「翻訳 OFF」** ボタンがあります。
+
+  ```
+  ┌──────────────────────────────────────┐
+  │ ≡  リスト名 @user     [翻訳 OFF] ⚙  │  ← カラムの見出し
+  ├──────────────────────────────────────┤
+  ```
+
+  押すと青い **「翻訳 ON」** になり、そのカラムだけで日本語以外のツイートが翻訳文に置き換わります（引用ツイートも含む）。もう一度押すとオフになり、原文に戻ります。
+- 初回起動時は、画面右下にボタンの場所を案内するメッセージが出ます。もう一度見たい場合はコンソールで `OTDjpTranslate.hint()` を実行します。
+- ボタンが見当たらない場合は、この拡張機能が有効か、本家 OldTweetDeck が同時に有効になっていないかを確認してください。開発者コンソール（F12）に `[OTDjp] OldTweetDeck JP auto-translate ready` と出ていれば読み込まれています。
 - 翻訳文の下の「原文を表示」で原文と切り替えられます。
 - 翻訳には、TweetDeck の「ツイートを翻訳」と同じ X の翻訳サービスを使います（`/1.1/translations/show.json` を interception.js が X の `translateTweet` に中継）。API キーは不要です。
 - 翻訳結果は `localStorage.OTDjpTranslateCache` に保存します（最大 3000 件、古いものから削除）。同じツイートは再翻訳しません。翻訳不要（元から日本語など）という判定も保存します。
@@ -44,6 +58,33 @@ OTDjpTranslate.clearCache()       // キャッシュを消去
 localStorage.OTDjpTranslateTarget = "ja"  // 翻訳先言語（既定 ja）
 ```
 
-### X 公式 Web の自動翻訳について
+### X 公式 Web の自動翻訳（Grok）について
 
-x.com のタイムラインに翻訳済みで並ぶのは、Grok による自動翻訳機能です。GraphQL の feature フラグ（`responsive_web_grok_show_grok_translated_post` など）で制御されていますが、レスポンスの形式は公開されておらず、ここでは確認できていません。そのため、形式が分かっている既存の翻訳 API を使っています。
+x.com のタイムラインに翻訳済みで並ぶのは、Grok による自動翻訳機能です。GraphQL の feature フラグ（`responsive_web_grok_show_grok_translated_post` など）が関係しているとみられますが、レスポンスの形式は公開されておらず、まだ確認できていません。そのため、形式が分かっている既存の翻訳 API を使っています。
+
+#### Grok 翻訳の確認方法
+
+**方法 A: 確認用スクリプトを使う（おすすめ）**
+
+1. PC のブラウザで x.com にログインし、ホームを開く（リストはまだ開かない）
+2. F12 で開発者ツールを開き、Console タブを選ぶ
+3. [`docs/grok-translation-probe.js`](grok-translation-probe.js) の中身を貼り付けて Enter を押す
+   - Chrome で「貼り付けを許可しますか」と警告が出たら、`allow pasting` と入力してから貼り付け直す
+4. **ページを再読み込みせずに**、左メニューの「リスト」から翻訳されて表示されるリストを開く
+5. コンソールに `[grok-probe]` で始まる行が出ます
+   - `request flags ListLatestTweetsTimeline {...}`: x.com がリクエストで送っている Grok／翻訳関係のフラグ
+   - `ListLatestTweetsTimeline $.data....<キー名>` と、その下の日本語文: 翻訳文が入っている場所
+6. `copy(__grokProbe)` を実行すると結果がクリップボードにコピーされるので、それを共有してください
+   - 結果に含まれるのは、キー名と翻訳文の先頭 400 文字だけです。Cookie やトークンは含みません
+
+何も出ない場合は、翻訳文がタイムラインの応答には入っておらず、別の通信で取得されている可能性があります。その場合は方法 B で探します。
+
+**方法 B: Network タブで直接探す**
+
+1. x.com で開発者ツールを開き、Network タブを選ぶ
+2. リストを開く（Network タブを開いたまま）
+3. Network タブ内で Ctrl+F（Mac は Cmd+F）を押し、画面に表示されている**翻訳後の日本語の一部**を検索する
+4. 見つかった通信の名前（例: `ListLatestTweetsTimeline`）と、Response 内で日本語が入っているキー名を確認する
+5. その通信の Headers タブにある Request URL の `features=` 部分も確認する
+
+通信の名前・キー名・features が分かれば、TweetDeck 側のリスト取得で同じフラグを送り、そのフィールドを使うように切り替えられます。そうなれば API 呼び出しを 1 ツイートずつ行う必要がなくなります。

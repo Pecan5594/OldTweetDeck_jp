@@ -1,6 +1,10 @@
 ﻿# OldTweetDeck
 昔のTweetDeckを取り戻しましょう！無料で！
 
+> [!IMPORTANT]
+> このリポジトリは **OldTweetDeck JP (自動翻訳版)** です。本家 [OldTweetDeck](https://github.com/dimdenGD/OldTweetDeck) とは別物で、カラム単位の自動翻訳を追加しています。本家と同時に有効にしないでください。
+> 翻訳ボタンの場所や使い方は [CUSTOMIZATION_JA.md](CUSTOMIZATION_JA.md) を参照してください。
+
 > [!NOTE]
 > Twitterがいいねを非公開にしたため、いいねタブは読み込まれなくなりました。  
 > いいねを取得するAPIが存在しなくなったため、これを修正することはできません。アクティビティタブにおいても同様です。
