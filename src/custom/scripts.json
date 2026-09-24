@@ -1,3 +1,4 @@
 [
-    "src/custom/auto-translate.js"
+    "src/custom/auto-translate.js",
+    "src/custom/settings.js"
 ]

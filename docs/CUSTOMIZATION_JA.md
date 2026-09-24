@@ -22,7 +22,8 @@
 ```
 src/custom/
   scripts.json        読み込むスクリプトの一覧（ここに追記する）
-  auto-translate.js   カラム単位の自動翻訳
+  auto-translate.js   カラム単位の自動翻訳・コミュニティノート表示
+  settings.js         設定画面・Export/Import state への設定の追加
 docs/grok-translation-probe.js  x.com の Grok 翻訳の確認用スクリプト（拡張機能では使わない）
 ```
 
@@ -48,17 +49,34 @@ docs/grok-translation-probe.js  x.com の Grok 翻訳の確認用スクリプト
 - 翻訳文の入手方法（API キーは不要）:
   1. **Grok 翻訳（優先）**: x.com のリスト表示と同じ Grok 翻訳を使います。タイムライン取得時に feature フラグ `responsive_web_grok_show_grok_translated_post` を有効にし、応答の各ツイートにある `grok_translated_post_with_availability.data.translation` を取り出します。追加の通信は発生しません。翻訳文の下には「英語から翻訳（Grok）」と表示されます。
   2. **X の翻訳 API（予備）**: Grok 翻訳が付いていないツイート（`is_available: false`）だけ、TweetDeck の「ツイートを翻訳」と同じ API で 1 件ずつ翻訳します（`/1.1/translations/show.json` を interception.js が X の `translateTweet` に中継）。
+- **コミュニティノート**: OldTweetDeck 本体はコミュニティノートを受け取っていますが表示していません。翻訳 ON のカラムでは、ツイート本文の下にコミュニティノートを表示します。X が Grok 翻訳を付けていればその訳（「コミュニティノート（Grok 翻訳）」）、なければ原文です（設定でオフにできます）。
 - 翻訳結果は `localStorage.OTDjpTranslateCache` に保存します（最大 3000 件、古いものから削除）。同じツイートは再翻訳しません。翻訳不要（元から日本語など）という判定も保存します。
 - リクエストは同時 2 件、間隔 0.4 秒です。失敗したら 30 秒待ち、そのツイートは 5 分後まで再試行しません。
+
+### 設定画面
+
+TweetDeck の設定画面（左下の歯車 → Settings）の一番下、「Import state」「Export state」の右にある **「OldTweetDeck JP 設定」** ボタンで開きます（見つからない場合はコンソールで `OTDjpSettings.open()`）。
+
+- 翻訳先の言語（既定: 日本語）
+- Grok 翻訳が付いていないツイートを X の翻訳 API で翻訳するか（オフにすると Grok 翻訳だけを使い、追加の通信をしない）
+- 翻訳 ON のカラムにコミュニティノートを表示するか
+- 翻訳 ON のカラムの一覧と、個別に OFF にするボタン（画面にないカラムの設定も消せます）
+- 翻訳キャッシュの件数と消去
+- ボタンの場所の案内をもう一度表示
+
+### バックアップ
+
+設定画面下部の「Export state」で書き出すファイル（`OTDState.json`）に、上記の設定と翻訳 ON のカラムが `otdjp` として追加されます。「Import state」でそのファイルを読み込むと一緒に復元されます。翻訳キャッシュは含みません。本家の exportState / importState はそのまま呼び出しているため、本家の書き出し内容は変わりません（本家版でこのファイルを読み込んでも `otdjp` は無視されます）。
 
 ### 設定・デバッグ（開発者コンソール）
 
 ```js
 OTDjpTranslate.columns()          // 有効なカラムの固定 ID（"api:…"）
 OTDjpTranslate.enable("c123...")  // 画面上のカラムキー（data-column）で有効化（無効化は disable）
-OTDjpTranslate.stats()            // キャッシュ件数・キュー状況・Grok 翻訳の取得件数（grok）
+OTDjpTranslate.stats()            // キャッシュ件数・キュー状況・Grok 翻訳の取得件数（grok）・コミュニティノート件数（notes）
+OTDjpSettings.open()              // 設定画面を開く
 OTDjpTranslate.clearCache()       // キャッシュを消去
-localStorage.OTDjpTranslateTarget = "ja"  // 翻訳先言語（既定 ja）
+localStorage.OTDjpTranslateTarget = "ja"  // 翻訳先言語（既定 ja。設定画面から変更可）
 ```
 
 ### X 公式 Web の自動翻訳（Grok）について

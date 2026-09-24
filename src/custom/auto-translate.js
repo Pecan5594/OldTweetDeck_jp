@@ -10,6 +10,8 @@
 // - Falls back to TweetDeck's own translateTweet() -> /1.1/translations/show.json, which
 //   interception.js proxies to X's translation service (the same one behind "Translate post").
 // - Every result is cached in localStorage.OTDjpTranslateCache, so a tweet is translated once.
+// - Shows community notes (which OldTweetDeck itself does not display) in those columns.
+// - Exposes window.OTDjpTranslate, used by settings.js for the settings dialog and backups.
 (function () {
     "use strict";
 
@@ -17,6 +19,8 @@
     const CACHE_KEY = "OTDjpTranslateCache";
     const TARGET_KEY = "OTDjpTranslateTarget";
     const HINT_KEY = "OTDjpTranslateHintShown";
+    const API_FALLBACK_KEY = "OTDjpTranslateApiFallback"; // "0" = Grok translations only
+    const NOTES_KEY = "OTDjpCommunityNotes";              // "0" = do not show community notes
     const CACHE_MAX = 3000;
     const CONCURRENCY = 2;
     const REQUEST_INTERVAL = 400;
@@ -27,6 +31,8 @@
 
     const baseLang = lang => (lang || "").toLowerCase().split("-")[0];
     const targetLang = () => baseLang(localStorage.getItem(TARGET_KEY) || "ja");
+    const apiFallbackEnabled = () => localStorage.getItem(API_FALLBACK_KEY) !== "0";
+    const notesEnabled = () => localStorage.getItem(NOTES_KEY) !== "0";
 
     function readJSON(key, fallback) {
         try {
@@ -279,11 +285,73 @@
             }
             return;
         }
+        // Without the API fallback the element stays unmarked, so a later Grok translation still applies.
+        if (!apiFallbackEnabled()) return;
         const failedAt = failed.get(key);
         if (failedAt && Date.now() - failedAt < RETRY_AFTER) return;
         el.dataset.otdjpState = "pending";
         el.dataset.otdjpKey = key;
         enqueue(id, key);
+    }
+
+    // ---- community notes ----
+    // OldTweetDeck receives community notes (birdwatch_pivot) but does not display them.
+    // In columns with translation on they are shown below the tweet, in Grok's translation when available.
+
+    const notes = new Map(); // tweet id -> { h: html, translated: bool }
+
+    // Escapes the note text and turns its URLs into links (t.co links show their expanded form).
+    function renderNoteHtml(text, entityList) {
+        const urls = {};
+        for (const entity of entityList || []) {
+            const ref = (entity && entity.ref) || entity || {};
+            if (ref.url) urls[ref.url] = { href: ref.expanded_url || ref.url, label: ref.display_url || ref.expanded_url || ref.url };
+        }
+        return escapeHtml(text)
+            .replace(/https?:\/\/[^\s<]+/g, url => {
+                // `url` is already escaped; t.co links contain nothing to escape
+                const link = urls[url];
+                const href = link ? escapeHtml(link.href) : url;
+                const label = link ? escapeHtml(link.label) : url;
+                return `<a href="${href}" target="_blank" rel="noopener">${label}</a>`;
+            })
+            .replace(/\n/g, "<br>");
+    }
+
+    function storeCommunityNote(id, pivot) {
+        const grok = pivot.note && pivot.note.grok_translated_community_note_with_availability;
+        const data = grok && grok.data;
+        if (data && data.translation && baseLang(data.destination_language) === targetLang()) {
+            notes.set(id, { h: renderNoteHtml(data.translation, data.rich_text_entities), translated: true });
+            return true;
+        }
+        const subtitle = pivot.subtitle;
+        if (subtitle && subtitle.text) {
+            notes.set(id, { h: renderNoteHtml(subtitle.text, subtitle.entities), translated: false });
+            return true;
+        }
+        return false;
+    }
+
+    function processCommunityNote(el) {
+        el.dataset.otdjpCn = "1";
+        const holder = el.closest("[data-tweet-id]");
+        // quoted tweets get no note box
+        if (!holder || holder.classList.contains("js-quote-detail")) return;
+        const note = notes.get(holder.getAttribute("data-tweet-id"));
+        if (!note) return;
+        const box = document.createElement("div");
+        box.className = "otdjp-cnote";
+        box.innerHTML = `<div class="otdjp-cnote-title">コミュニティノート${note.translated ? "（Grok 翻訳）" : ""}</div>
+            <div class="otdjp-cnote-text">${note.h}</div>`;
+        const translationNote = el.nextElementSibling;
+        const after = translationNote && translationNote.classList.contains("otdjp-translate-note") ? translationNote : el;
+        after.insertAdjacentElement("afterend", box);
+    }
+
+    function removeCommunityNotes(root) {
+        for (const box of root.querySelectorAll(".otdjp-cnote")) box.remove();
+        for (const el of root.querySelectorAll(".js-tweet-text[data-otdjp-cn]")) delete el.dataset.otdjpCn;
     }
 
     function updateButton(btn, key) {
@@ -325,6 +393,11 @@
             for (const el of column.querySelectorAll(".js-tweet-text:not([data-otdjp-state])")) {
                 processTweetText(el);
             }
+            if (notesEnabled() && notes.size) {
+                for (const el of column.querySelectorAll(".js-tweet-text:not([data-otdjp-cn])")) {
+                    processCommunityNote(el);
+                }
+            }
         }
     }
 
@@ -349,6 +422,7 @@
                 for (const el of column.querySelectorAll(".js-tweet-text[data-otdjp-state]")) {
                     restoreOriginal(el);
                 }
+                removeCommunityNotes(column);
             }
         }
         scheduleScan();
@@ -432,16 +506,18 @@
         if (xhr.__otdjpHarvested) return;
         xhr.__otdjpHarvested = true;
         const text = xhr.responseText;
-        if (!text || !text.includes(GROK_KEY)) return;
+        if (!text || !(text.includes(GROK_KEY) || text.includes("birdwatch_pivot"))) return;
         const target = targetLang();
         const stored = [];
+        let newNotes = 0;
         const stack = [JSON.parse(text)];
         while (stack.length) {
             const node = stack.pop();
             if (!node || typeof node !== "object") continue;
+            const id = node.rest_id || (node.legacy && node.legacy.id_str);
+            if (id && node.birdwatch_pivot && storeCommunityNote(id, node.birdwatch_pivot)) newNotes++;
             const grok = node[GROK_KEY];
             if (grok && grok.is_available && grok.data && grok.data.translation) {
-                const id = node.rest_id || (node.legacy && node.legacy.id_str);
                 const data = grok.data;
                 if (id && baseLang(data.destination_language) === target) {
                     const key = `${target}:${id}`;
@@ -462,6 +538,11 @@
                 const value = node[key];
                 if (value && typeof value === "object") stack.push(value);
             }
+        }
+        if (newNotes) {
+            // re-check tweets that were already rendered before this response arrived
+            for (const el of document.querySelectorAll(".js-tweet-text[data-otdjp-cn]")) delete el.dataset.otdjpCn;
+            scheduleScan();
         }
         if (!stored.length) return;
         grokHits += stored.length;
@@ -533,6 +614,12 @@
             .otdjp-translate-btn.is-flash { box-shadow: 0 0 0 3px #ffad1f; }
             .otdjp-translate-note { font-size: 12px; line-height: 16px; color: #8899a6; margin-top: 2px; }
             .otdjp-translate-note a { color: #1d9bf0; }
+            .otdjp-cnote {
+                margin: 6px 0 2px; padding: 6px 8px; border: 1px solid #8899a6; border-radius: 8px;
+                font-size: 12px; line-height: 17px;
+            }
+            .otdjp-cnote-title { font-weight: bold; margin-bottom: 2px; }
+            .otdjp-cnote a { color: #1d9bf0; }
         `;
         document.head.appendChild(style);
     }
@@ -544,6 +631,7 @@
         hint.className = "otdjp-hint";
         hint.innerHTML = `<b>OldTweetDeck JP</b><br>各カラムの見出し右上（設定アイコンの左）にある
             <b>「翻訳 OFF」</b>ボタンを押すと、そのカラムの日本語以外のツイートが自動で翻訳されます。<br>
+            翻訳先の言語などの設定は、TweetDeck の設定画面の一番下にある<b>「OldTweetDeck JP 設定」</b>から変更できます。<br>
             <button type="button">わかった</button>`;
         hint.querySelector("button").addEventListener("click", () => {
             try { localStorage.setItem(HINT_KEY, "1"); } catch (e) {}
@@ -569,14 +657,90 @@
         console.log(`[OTDjp] OldTweetDeck JP auto-translate ready (${enabledColumns.size} column(s), ${Object.keys(cache).length} cached)`);
     }
 
+    // Restores every column to its original text and translates again (after a settings change).
+    function refreshAll() {
+        for (const el of document.querySelectorAll(".js-tweet-text[data-otdjp-state]")) restoreOriginal(el);
+        removeCommunityNotes(document);
+        failed.clear();
+        scheduleScan();
+    }
+
+    // Enabled columns with their titles, for the settings dialog.
+    function columnList() {
+        const present = new Map();
+        for (const column of document.querySelectorAll(".js-app-columns .js-column[data-column]")) {
+            const key = column.getAttribute("data-column");
+            let title = "";
+            try { title = TD.controller.columnManager.get(key).model.getTitle(); } catch (e) {}
+            present.set(persistentId(key) || key, { key, title });
+        }
+        return [...enabledColumns].map(id => ({ id, ...(present.get(id) || { key: null, title: "" }), present: present.has(id) }));
+    }
+
+    function removeColumn(id) {
+        const item = columnList().find(c => c.id === id);
+        if (item && item.key) {
+            toggleColumn(item.key, false);
+        } else {
+            enabledColumns.delete(id);
+            saveColumns();
+        }
+    }
+
+    const SETTING_KEYS = { target: TARGET_KEY, apiFallback: API_FALLBACK_KEY, communityNotes: NOTES_KEY };
+
+    function getSettings() {
+        return { target: targetLang(), apiFallback: apiFallbackEnabled(), communityNotes: notesEnabled() };
+    }
+
+    function setSetting(name, value) {
+        const key = SETTING_KEYS[name];
+        if (!key) throw new Error(`unknown setting ${name}`);
+        try {
+            if (name === "target") localStorage.setItem(key, baseLang(value) || "ja");
+            else localStorage.setItem(key, value ? "1" : "0");
+        } catch (e) {
+            console.warn("[OTDjp] failed to save setting", e);
+        }
+        refreshAll();
+    }
+
+    // Backup data (the translation cache is left out: it can be rebuilt and may be large).
+    function exportData() {
+        return { version: 1, columns: [...enabledColumns], ...getSettings() };
+    }
+
+    function importData(data) {
+        if (!data || typeof data !== "object") return;
+        if (Array.isArray(data.columns)) {
+            enabledColumns.clear();
+            for (const id of data.columns) if (String(id).startsWith("api:")) enabledColumns.add(id);
+            saveColumns();
+        }
+        try {
+            if (typeof data.target === "string") localStorage.setItem(TARGET_KEY, baseLang(data.target) || "ja");
+            if (typeof data.apiFallback === "boolean") localStorage.setItem(API_FALLBACK_KEY, data.apiFallback ? "1" : "0");
+            if (typeof data.communityNotes === "boolean") localStorage.setItem(NOTES_KEY, data.communityNotes ? "1" : "0");
+        } catch (e) {
+            console.warn("[OTDjp] failed to import settings", e);
+        }
+    }
+
     window.OTDjpTranslate = {
         enable: key => toggleColumn(key, true),
         disable: key => toggleColumn(key, false),
         columns: () => [...enabledColumns],
+        columnList,
+        removeColumn,
+        getSettings,
+        setSetting,
+        exportData,
+        importData,
         hint: () => showHint(true),
         clearCache: () => {
             cache = {};
             saveCache();
+            refreshAll();
         },
         stats: () => ({
             cached: Object.keys(cache).length,
@@ -584,6 +748,7 @@
             active,
             failed: failed.size,
             grok: grokHits,
+            notes: notes.size,
             target: targetLang(),
         }),
     };
