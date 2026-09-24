@@ -44,7 +44,9 @@ docs/grok-translation-probe.js  x.com の Grok 翻訳の確認用スクリプト
 - 初回起動時は、画面右下にボタンの場所を案内するメッセージが出ます。もう一度見たい場合はコンソールで `OTDjpTranslate.hint()` を実行します。
 - ボタンが見当たらない場合は、この拡張機能が有効か、本家 OldTweetDeck が同時に有効になっていないかを確認してください。開発者コンソール（F12）に `[OTDjp] OldTweetDeck JP auto-translate ready` と出ていれば読み込まれています。
 - 翻訳文の下の「原文を表示」で原文と切り替えられます。
-- 翻訳には、TweetDeck の「ツイートを翻訳」と同じ X の翻訳サービスを使います（`/1.1/translations/show.json` を interception.js が X の `translateTweet` に中継）。API キーは不要です。
+- 翻訳文の入手方法（API キーは不要）:
+  1. **Grok 翻訳（優先）**: x.com のリスト表示と同じ Grok 翻訳を使います。タイムライン取得時に feature フラグ `responsive_web_grok_show_grok_translated_post` を有効にし、応答の各ツイートにある `grok_translated_post_with_availability.data.translation` を取り出します。追加の通信は発生しません。翻訳文の下には「英語から翻訳（Grok）」と表示されます。
+  2. **X の翻訳 API（予備）**: Grok 翻訳が付いていないツイート（`is_available: false`）だけ、TweetDeck の「ツイートを翻訳」と同じ API で 1 件ずつ翻訳します（`/1.1/translations/show.json` を interception.js が X の `translateTweet` に中継）。
 - 翻訳結果は `localStorage.OTDjpTranslateCache` に保存します（最大 3000 件、古いものから削除）。同じツイートは再翻訳しません。翻訳不要（元から日本語など）という判定も保存します。
 - リクエストは同時 2 件、間隔 0.4 秒です。失敗したら 30 秒待ち、そのツイートは 5 分後まで再試行しません。
 
@@ -53,14 +55,29 @@ docs/grok-translation-probe.js  x.com の Grok 翻訳の確認用スクリプト
 ```js
 OTDjpTranslate.columns()          // 有効なカラムのキー
 OTDjpTranslate.enable("c123...")  // カラムを有効化（無効化は disable）
-OTDjpTranslate.stats()            // キャッシュ件数・キュー状況
+OTDjpTranslate.stats()            // キャッシュ件数・キュー状況・Grok 翻訳の取得件数（grok）
 OTDjpTranslate.clearCache()       // キャッシュを消去
 localStorage.OTDjpTranslateTarget = "ja"  // 翻訳先言語（既定 ja）
 ```
 
 ### X 公式 Web の自動翻訳（Grok）について
 
-x.com のタイムラインに翻訳済みで並ぶのは、Grok による自動翻訳機能です。GraphQL の feature フラグ（`responsive_web_grok_show_grok_translated_post` など）が関係しているとみられますが、レスポンスの形式は公開されておらず、まだ確認できていません。そのため、形式が分かっている既存の翻訳 API を使っています。
+x.com のタイムラインに翻訳済みで並ぶのは、Grok による自動翻訳機能です。下記の確認用スクリプトで調べたところ、`ListLatestTweetsTimeline` の応答の各ツイート（`tweet_results.result`。リツイート元の `retweeted_status_result.result` と引用元の `quoted_status_result.result` も同様）に、次の形で入っていました。
+
+```json
+"grok_translated_post_with_availability": {
+  "is_available": true,
+  "data": {
+    "destination_language": "ja",
+    "source_language": "en",
+    "translation": "翻訳文（全文）",
+    "preview_translation": "翻訳文（途中まで。長いツイートのみ）",
+    "entities": { "hashtags": [], "symbols": [], "urls": [...], "user_mentions": [...] }
+  }
+}
+```
+
+翻訳できないツイートは `{"is_available": false}` です。auto-translate.js はこの形式を前提にしています。X が形式を変えた場合は、下記の手順で調べ直してください。
 
 #### Grok 翻訳の確認方法
 
@@ -87,4 +104,4 @@ x.com のタイムラインに翻訳済みで並ぶのは、Grok による自動
 4. 見つかった通信の名前（例: `ListLatestTweetsTimeline`）と、Response 内で日本語が入っているキー名を確認する
 5. その通信の Headers タブにある Request URL の `features=` 部分も確認する
 
-通信の名前・キー名・features が分かれば、TweetDeck 側のリスト取得で同じフラグを送り、そのフィールドを使うように切り替えられます。そうなれば API 呼び出しを 1 ツイートずつ行う必要がなくなります。
+通信の名前・キー名・features が分かれば、auto-translate.js の `GROK_FLAG` / `GROK_KEY` と `harvestGrok()` を合わせて直せます。

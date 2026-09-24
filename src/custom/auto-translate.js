@@ -5,7 +5,9 @@
 //
 // - Adds a "翻訳 OFF/ON" toggle button to every column header (left of the settings icon). Translation runs only in columns
 //   where it is switched on (stored in localStorage.OTDjpTranslateColumns).
-// - Uses TweetDeck's own translateTweet() -> /1.1/translations/show.json, which
+// - Prefers the Grok translations X already embeds in timeline responses
+//   (grok_translated_post_with_availability), the same ones x.com shows in lists.
+// - Falls back to TweetDeck's own translateTweet() -> /1.1/translations/show.json, which
 //   interception.js proxies to X's translation service (the same one behind "Translate post").
 // - Every result is cached in localStorage.OTDjpTranslateCache, so a tweet is translated once.
 (function () {
@@ -98,7 +100,7 @@
 
     function renderHtml(text, entities) {
         try {
-            return TD.util.transform(text, entities || {});
+            return window.TD.util.transform(text, entities || {});
         } catch (e) {
             return escapeHtml(text);
         }
@@ -188,7 +190,7 @@
 
         const note = document.createElement("div");
         note.className = "otdjp-translate-note";
-        note.innerHTML = `${escapeHtml(languageName(entry.l))}から翻訳 · <a href="#" class="otdjp-translate-toggle">原文を表示</a>`;
+        note.innerHTML = `${escapeHtml(languageName(entry.l))}から翻訳${entry.g ? "（Grok）" : ""} · <a href="#" class="otdjp-translate-toggle">原文を表示</a>`;
         el.insertAdjacentElement("afterend", note);
     }
 
@@ -291,7 +293,7 @@
         scanTimer = setTimeout(() => {
             scanTimer = null;
             scan();
-        }, 150);
+        }, 50);
     }
 
     function toggleColumn(key, force) {
@@ -357,6 +359,117 @@
         }
     }
 
+    // ---- Grok translations delivered inside timeline responses ----
+    // x.com asks for them with the `responsive_web_grok_show_grok_translated_post` feature flag and
+    // receives them per tweet as `grok_translated_post_with_availability`:
+    //   { is_available, data: { translation, entities, source_language, destination_language } }
+    // They are stored in the same cache, so no per-tweet translation request is needed.
+
+    const GROK_FLAG = "responsive_web_grok_show_grok_translated_post";
+    const GROK_KEY = "grok_translated_post_with_availability";
+    let grokHits = 0;
+
+    function enableGrokFlag(xhr) {
+        const url = new URL(xhr.modUrl, location.href);
+        const features = url.searchParams.get("features");
+        if (!features || !features.includes(GROK_FLAG)) return;
+        const parsed = JSON.parse(features);
+        parsed[GROK_FLAG] = true;
+        url.searchParams.set("features", JSON.stringify(parsed));
+        xhr.modUrl = url.toString();
+        xhr.__otdjpGrok = true;
+    }
+
+    // Media links (t.co) are hidden by TweetDeck in the original text; drop them from the translation too.
+    function stripMediaUrls(text, legacy) {
+        const media = (legacy && legacy.entities && legacy.entities.media) || [];
+        for (const m of media) {
+            if (m && m.url) text = text.split(m.url).join("");
+        }
+        return text.trim();
+    }
+
+    function harvestGrok(xhr) {
+        if (xhr.__otdjpHarvested) return;
+        xhr.__otdjpHarvested = true;
+        const text = xhr.responseText;
+        if (!text || !text.includes(GROK_KEY)) return;
+        const target = targetLang();
+        const stored = [];
+        const stack = [JSON.parse(text)];
+        while (stack.length) {
+            const node = stack.pop();
+            if (!node || typeof node !== "object") continue;
+            const grok = node[GROK_KEY];
+            if (grok && grok.is_available && grok.data && grok.data.translation) {
+                const id = node.rest_id || (node.legacy && node.legacy.id_str);
+                const data = grok.data;
+                if (id && baseLang(data.destination_language) === target) {
+                    const key = `${target}:${id}`;
+                    if (baseLang(data.source_language) === target) {
+                        cache[key] = { n: 1, t: Date.now() };
+                    } else {
+                        cache[key] = {
+                            h: renderHtml(stripMediaUrls(data.translation, node.legacy), data.entities),
+                            l: data.source_language,
+                            g: 1,
+                            t: Date.now(),
+                        };
+                    }
+                    stored.push(key);
+                }
+            }
+            for (const key in node) {
+                const value = node[key];
+                if (value && typeof value === "object") stack.push(value);
+            }
+        }
+        if (!stored.length) return;
+        grokHits += stored.length;
+        saveCache();
+        for (const key of stored) resolvePending(key);
+        scheduleScan();
+    }
+
+    // Wraps the routes of interception.js (without editing that remotely updated file) so that
+    // every GraphQL timeline request asks for Grok translations and its response is harvested.
+    function patchGrokRoutes() {
+        try {
+            if (typeof proxyRoutes === "undefined") return;
+            for (const route of proxyRoutes) {
+                if (!route || route.__otdjpGrok) continue;
+                route.__otdjpGrok = true;
+                const before = route.beforeRequest;
+                if (before) {
+                    route.beforeRequest = function (xhr) {
+                        before.call(this, xhr);
+                        try { enableGrokFlag(xhr); } catch (e) {}
+                    };
+                }
+                const headers = route.beforeSendHeaders;
+                if (headers) {
+                    route.beforeSendHeaders = function (xhr) {
+                        headers.call(this, xhr);
+                        if (xhr.__otdjpGrok) xhr.modReqHeaders["X-Twitter-Client-Language"] = targetLang();
+                    };
+                }
+                const after = route.afterRequest;
+                if (after) {
+                    route.afterRequest = function (xhr) {
+                        try {
+                            if (!(xhr.storage && xhr.storage.cancelled)) harvestGrok(xhr);
+                        } catch (e) {
+                            console.warn("[OTDjp] failed to read Grok translations", e);
+                        }
+                        return after.call(this, xhr);
+                    };
+                }
+            }
+        } catch (e) {
+            console.warn("[OTDjp] failed to patch routes for Grok translations", e);
+        }
+    }
+
     function injectStyle() {
         const style = document.createElement("style");
         style.textContent = `
@@ -409,7 +522,6 @@
     }
 
     function init() {
-        patchTranslationRoute();
         injectStyle();
         new MutationObserver(scheduleScan).observe(document.body, { childList: true, subtree: true });
         setInterval(scheduleScan, 30 * 1000);
@@ -432,9 +544,14 @@
             queued: queue.length,
             active,
             failed: failed.size,
+            grok: grokHits,
             target: targetLang(),
         }),
     };
+
+    // Patch the request routes right away so the first timeline requests already carry Grok translations.
+    patchTranslationRoute();
+    patchGrokRoutes();
 
     const readyTimer = setInterval(() => {
         if (window.TD && TD.ready && TD.controller && TD.controller.clients && TD.util && document.body) {
