@@ -1,6 +1,7 @@
 // OldTweetDeck_jp: settings dialog and backup of the OldTweetDeck JP settings.
 //
-// - Adds an "OldTweetDeck JP 設定" button next to "Import state" / "Export state" at the bottom of
+// - Adds an "OldTweetDeck JP 設定" button next to "Import state" / "Export state" (shown in Japanese
+//   by settings-ja.js as 状態をインポート / 状態をエクスポート) at the bottom of
 //   TweetDeck's settings, which opens a dialog for the auto-translate settings (see auto-translate.js).
 // - Adds the settings to the file written by "Export state" and restores them on "Import state".
 //   The upstream exportState() / importState() in interception.js are wrapped, not copied, so their
@@ -155,7 +156,7 @@
                     <button type="button" name="hint">ボタンの場所の案内をもう一度表示</button>
                 </div>
                 <div class="otdjp-muted">
-                    これらの設定と翻訳 ON のカラムは、下の「Export state」で書き出すファイルに含まれ、「Import state」で復元されます（翻訳キャッシュは含みません）。
+                    これらの設定と翻訳 ON のカラムは、設定画面下部の「状態をエクスポート」で書き出すファイルに含まれ、「状態をインポート」で復元されます（翻訳キャッシュは含みません）。
                 </div>
 
                 <div class="otdjp-settings-footer">
