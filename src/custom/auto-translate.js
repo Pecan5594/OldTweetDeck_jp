@@ -1,0 +1,401 @@
+// OldTweetDeck_jp: per-column automatic tweet translation.
+//
+// Loaded by src/injection.js from the extension package (see src/custom/scripts.json),
+// so it is never overwritten by the remote interception.js / bundle.js updates.
+//
+// - Adds a "訳" toggle button to every column header. Translation runs only in columns
+//   where it is switched on (stored in localStorage.OTDjpTranslateColumns).
+// - Uses TweetDeck's own translateTweet() -> /1.1/translations/show.json, which
+//   interception.js proxies to X's translation service (the same one behind "Translate post").
+// - Every result is cached in localStorage.OTDjpTranslateCache, so a tweet is translated once.
+(function () {
+    "use strict";
+
+    const COLUMNS_KEY = "OTDjpTranslateColumns";
+    const CACHE_KEY = "OTDjpTranslateCache";
+    const TARGET_KEY = "OTDjpTranslateTarget";
+    const CACHE_MAX = 3000;
+    const CONCURRENCY = 2;
+    const REQUEST_INTERVAL = 400;
+    const RETRY_AFTER = 5 * 60 * 1000;
+    const ERROR_BACKOFF = 30 * 1000;
+    // undetermined / no linguistic content / media-only / hashtag-only etc.
+    const SKIP_LANGS = new Set(["", "und", "zxx", "qme", "qam", "qct", "qht", "qhm", "qst", "art"]);
+
+    const baseLang = lang => (lang || "").toLowerCase().split("-")[0];
+    const targetLang = () => baseLang(localStorage.getItem(TARGET_KEY) || "ja");
+
+    function readJSON(key, fallback) {
+        try {
+            const value = localStorage.getItem(key);
+            return value ? JSON.parse(value) : fallback;
+        } catch (e) {
+            console.warn(`[OTDjp] failed to read ${key}`, e);
+            return fallback;
+        }
+    }
+
+    // ---- enabled columns ----
+
+    const enabledColumns = new Set(readJSON(COLUMNS_KEY, []));
+    function saveColumns() {
+        try {
+            localStorage.setItem(COLUMNS_KEY, JSON.stringify([...enabledColumns]));
+        } catch (e) {
+            console.warn("[OTDjp] failed to save columns", e);
+        }
+    }
+
+    // ---- cache ----
+    // key: `${targetLang}:${tweetId}` -> { h: translated html, l: source lang, t: last used }
+    //                                  | { n: 1, t } (no translation needed)
+
+    let cache = readJSON(CACHE_KEY, {});
+    if (typeof cache !== "object" || cache === null || Array.isArray(cache)) cache = {};
+    let saveTimer = null;
+
+    function pruneCache(max) {
+        const keys = Object.keys(cache);
+        if (keys.length <= max) return;
+        keys.sort((a, b) => (cache[a].t || 0) - (cache[b].t || 0));
+        for (const key of keys.slice(0, keys.length - Math.floor(max * 2 / 3))) {
+            delete cache[key];
+        }
+    }
+
+    function saveCache() {
+        clearTimeout(saveTimer);
+        saveTimer = setTimeout(() => {
+            pruneCache(CACHE_MAX);
+            try {
+                localStorage.setItem(CACHE_KEY, JSON.stringify(cache));
+            } catch (e) {
+                // quota exceeded: shrink and retry once
+                pruneCache(Math.floor(Object.keys(cache).length / 2));
+                try {
+                    localStorage.setItem(CACHE_KEY, JSON.stringify(cache));
+                } catch (e2) {
+                    console.warn("[OTDjp] failed to save translation cache", e2);
+                }
+            }
+        }, 2000);
+    }
+
+    // ---- translation requests ----
+
+    const queue = [];
+    const queued = new Set();
+    const failed = new Map();
+    let active = 0;
+    let pausedUntil = 0;
+
+    function escapeHtml(text) {
+        const div = document.createElement("div");
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    function renderHtml(text, entities) {
+        try {
+            return TD.util.transform(text, entities || {});
+        } catch (e) {
+            return escapeHtml(text);
+        }
+    }
+
+    function fetchTranslation(id, lang) {
+        return new Promise((resolve, reject) => {
+            const client = TD.controller.clients.getPreferredClient("twitter");
+            if (!client) return reject(new Error("no twitter client"));
+            client.translateTweet(id, lang, resolve, reject);
+        });
+    }
+
+    function enqueue(id, key) {
+        if (queued.has(key)) return;
+        queued.add(key);
+        queue.push({ id, key, lang: targetLang() });
+        pump();
+    }
+
+    function pump() {
+        while (active < CONCURRENCY && queue.length) {
+            const wait = pausedUntil - Date.now();
+            if (wait > 0) {
+                setTimeout(pump, wait);
+                return;
+            }
+            const job = queue.shift();
+            active++;
+            fetchTranslation(job.id, job.lang)
+                .then(res => {
+                    if (!res || !res.text || baseLang(res.translated_lang) === job.lang) {
+                        cache[job.key] = { n: 1, t: Date.now() };
+                    } else {
+                        cache[job.key] = {
+                            h: renderHtml(res.text, res.entities),
+                            l: res.translated_lang,
+                            t: Date.now(),
+                        };
+                    }
+                    failed.delete(job.key);
+                    saveCache();
+                })
+                .catch(e => {
+                    console.warn(`[OTDjp] translation failed for ${job.id}`, e);
+                    failed.set(job.key, Date.now());
+                    pausedUntil = Date.now() + ERROR_BACKOFF;
+                })
+                .finally(() => {
+                    queued.delete(job.key);
+                    resolvePending(job.key);
+                    setTimeout(() => {
+                        active--;
+                        pump();
+                    }, REQUEST_INTERVAL);
+                });
+        }
+    }
+
+    // ---- DOM ----
+
+    let languageNames = null;
+    try {
+        languageNames = new Intl.DisplayNames(["ja"], { type: "language" });
+    } catch (e) {}
+    const languageName = lang => {
+        try {
+            return (languageNames && languageNames.of(lang)) || lang;
+        } catch (e) {
+            return lang;
+        }
+    };
+
+    function columnElement(key) {
+        return document.querySelector(`.js-app-columns .js-column[data-column="${CSS.escape(key)}"]`);
+    }
+
+    function isInEnabledColumn(el) {
+        const column = el.closest(".js-app-columns .js-column[data-column]");
+        return !!column && enabledColumns.has(column.getAttribute("data-column"));
+    }
+
+    function applyTranslation(el, entry) {
+        el.__otdjpOriginal = el.innerHTML;
+        el.innerHTML = entry.h;
+        el.dataset.otdjpState = "translated";
+
+        const note = document.createElement("div");
+        note.className = "otdjp-translate-note";
+        note.innerHTML = `${escapeHtml(languageName(entry.l))}から翻訳 · <a href="#" class="otdjp-translate-toggle">原文を表示</a>`;
+        el.insertAdjacentElement("afterend", note);
+    }
+
+    function restoreOriginal(el) {
+        if (el.dataset.otdjpState === "translated" && el.__otdjpOriginal !== undefined) {
+            el.innerHTML = el.__otdjpOriginal;
+            const note = el.nextElementSibling;
+            if (note && note.classList.contains("otdjp-translate-note")) note.remove();
+        }
+        delete el.__otdjpOriginal;
+        delete el.dataset.otdjpState;
+        delete el.dataset.otdjpKey;
+    }
+
+    function resolvePending(key) {
+        const els = document.querySelectorAll(`.js-tweet-text[data-otdjp-state="pending"][data-otdjp-key="${CSS.escape(key)}"]`);
+        const entry = cache[key];
+        for (const el of els) {
+            if (!entry) {
+                // failed: leave unmarked so a later scan can retry after RETRY_AFTER
+                delete el.dataset.otdjpState;
+            } else if (entry.n) {
+                el.dataset.otdjpState = "skip";
+            } else if (isInEnabledColumn(el)) {
+                applyTranslation(el, entry);
+            } else {
+                delete el.dataset.otdjpState;
+            }
+        }
+    }
+
+    function processTweetText(el) {
+        const lang = baseLang(el.getAttribute("lang"));
+        const target = targetLang();
+        const holder = el.closest("[data-tweet-id]");
+        const id = holder && holder.getAttribute("data-tweet-id");
+        if (SKIP_LANGS.has(lang) || lang === target || !id || !el.textContent.trim()) {
+            el.dataset.otdjpState = "skip";
+            return;
+        }
+        const key = `${target}:${id}`;
+        const entry = cache[key];
+        if (entry) {
+            entry.t = Date.now();
+            if (entry.n) {
+                el.dataset.otdjpState = "skip";
+            } else {
+                applyTranslation(el, entry);
+            }
+            return;
+        }
+        const failedAt = failed.get(key);
+        if (failedAt && Date.now() - failedAt < RETRY_AFTER) return;
+        el.dataset.otdjpState = "pending";
+        el.dataset.otdjpKey = key;
+        enqueue(id, key);
+    }
+
+    function updateButton(btn, key) {
+        const on = enabledColumns.has(key);
+        btn.classList.toggle("is-active", on);
+        btn.title = on ? "自動翻訳: オン（クリックでオフ）" : "自動翻訳: オフ（クリックでオン）";
+    }
+
+    function ensureButtons() {
+        for (const column of document.querySelectorAll(".js-app-columns .js-column[data-column]")) {
+            const links = column.querySelector(".column-header-links");
+            if (!links || links.querySelector(".otdjp-translate-btn")) continue;
+            const key = column.getAttribute("data-column");
+            const btn = document.createElement("a");
+            btn.href = "#";
+            btn.className = "column-header-link otdjp-translate-btn";
+            btn.textContent = "訳";
+            btn.addEventListener("click", e => {
+                e.preventDefault();
+                e.stopPropagation();
+                toggleColumn(key);
+            });
+            updateButton(btn, key);
+            links.insertBefore(btn, links.firstChild);
+        }
+    }
+
+    function scan() {
+        ensureButtons();
+        for (const key of enabledColumns) {
+            const column = columnElement(key);
+            if (!column) continue;
+            for (const el of column.querySelectorAll(".js-tweet-text:not([data-otdjp-state])")) {
+                processTweetText(el);
+            }
+        }
+    }
+
+    let scanTimer = null;
+    function scheduleScan() {
+        if (scanTimer) return;
+        scanTimer = setTimeout(() => {
+            scanTimer = null;
+            scan();
+        }, 150);
+    }
+
+    function toggleColumn(key, force) {
+        const on = force === undefined ? !enabledColumns.has(key) : !!force;
+        if (on) enabledColumns.add(key);
+        else enabledColumns.delete(key);
+        saveColumns();
+
+        const column = columnElement(key);
+        if (column) {
+            const btn = column.querySelector(".otdjp-translate-btn");
+            if (btn) updateButton(btn, key);
+            if (!on) {
+                for (const el of column.querySelectorAll(".js-tweet-text[data-otdjp-state]")) {
+                    restoreOriginal(el);
+                }
+            }
+        }
+        scheduleScan();
+    }
+
+    // "原文を表示" / "翻訳を表示"
+    document.addEventListener("click", e => {
+        const toggle = e.target.closest && e.target.closest(".otdjp-translate-toggle");
+        if (!toggle) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const note = toggle.closest(".otdjp-translate-note");
+        const el = note && note.previousElementSibling;
+        if (!el || el.__otdjpOriginal === undefined) return;
+        const showingOriginal = toggle.dataset.showing === "original";
+        const translated = el.__otdjpTranslated || el.innerHTML;
+        if (showingOriginal) {
+            el.innerHTML = translated;
+            toggle.textContent = "原文を表示";
+            toggle.dataset.showing = "translated";
+        } else {
+            el.__otdjpTranslated = el.innerHTML;
+            el.innerHTML = el.__otdjpOriginal;
+            toggle.textContent = "翻訳を表示";
+            toggle.dataset.showing = "original";
+        }
+    }, true);
+
+    // Make X translate into the requested `dest` language instead of the browser language.
+    // Wraps the route defined in interception.js without editing that (remotely updated) file.
+    function patchTranslationRoute() {
+        try {
+            if (typeof proxyRoutes === "undefined") return;
+            const route = proxyRoutes.find(r => r && r.path === "/1.1/translations/show.json");
+            if (!route || route.__otdjpPatched) return;
+            const original = route.beforeSendHeaders;
+            route.beforeSendHeaders = function (xhr) {
+                if (original) original.call(this, xhr);
+                try {
+                    const dest = new URL(xhr.originalUrl, location.href).searchParams.get("dest");
+                    if (dest) xhr.modReqHeaders["X-Twitter-Client-Language"] = dest;
+                } catch (e) {}
+            };
+            route.__otdjpPatched = true;
+        } catch (e) {
+            console.warn("[OTDjp] failed to patch translation route", e);
+        }
+    }
+
+    function injectStyle() {
+        const style = document.createElement("style");
+        style.textContent = `
+            .otdjp-translate-btn { font-weight: bold; font-size: 13px; line-height: 20px; opacity: .45; }
+            .otdjp-translate-btn:hover { opacity: .8; }
+            .otdjp-translate-btn.is-active { opacity: 1; color: #1d9bf0 !important; }
+            .otdjp-translate-note { font-size: 12px; line-height: 16px; color: #8899a6; margin-top: 2px; }
+            .otdjp-translate-note a { color: #1d9bf0; }
+        `;
+        document.head.appendChild(style);
+    }
+
+    function init() {
+        patchTranslationRoute();
+        injectStyle();
+        new MutationObserver(scheduleScan).observe(document.body, { childList: true, subtree: true });
+        setInterval(scheduleScan, 30 * 1000);
+        scan();
+        console.log(`[OTDjp] auto-translate ready (${enabledColumns.size} column(s), ${Object.keys(cache).length} cached)`);
+    }
+
+    window.OTDjpTranslate = {
+        enable: key => toggleColumn(key, true),
+        disable: key => toggleColumn(key, false),
+        columns: () => [...enabledColumns],
+        clearCache: () => {
+            cache = {};
+            saveCache();
+        },
+        stats: () => ({
+            cached: Object.keys(cache).length,
+            queued: queue.length,
+            active,
+            failed: failed.size,
+            target: targetLang(),
+        }),
+    };
+
+    const readyTimer = setInterval(() => {
+        if (window.TD && TD.ready && TD.controller && TD.controller.clients && TD.util && document.body) {
+            clearInterval(readyTimer);
+            init();
+        }
+    }, 500);
+})();

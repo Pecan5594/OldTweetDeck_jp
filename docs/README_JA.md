@@ -56,6 +56,8 @@
 TweetDeckのファイルが更新された場合は、タブを再読み込みするだけで拡張機能を再インストールすることなく自動的に更新を受け取れます。 (`localStorage.OTDalwaysUseLocalFiles = '1'`の設定をしている場合を除く)  
 拡張機能のファイルが更新された場合は、拡張機能を再インストールすることで更新を受け取れます。
 
+カスタマイズ（カラム単位の自動翻訳など）と、リモート更新で上書きされない構成については [CUSTOMIZATION_JA.md](CUSTOMIZATION_JA.md) を参照してください。
+
 ## Better TweetDeck
 
 この拡張機能と一緒に使うことが出来るBetter TweetDeckの[fork](https://github.com/dimdenGD/BetterTweetDeck/releases)を作りました。  

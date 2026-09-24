@@ -161,6 +161,27 @@ async function main() {
     twitter_text_script.innerHTML = twitter_text.value;
     document.head.appendChild(twitter_text_script);
 
+    // OldTweetDeck_jp: local customizations.
+    // Always loaded from the extension package (never from raw.githubusercontent.com),
+    // so they survive the remote updates of interception.js / bundle.js above.
+    // Add scripts to src/custom/scripts.json instead of editing this block.
+    try {
+        const customScripts = await fetch(chrome.runtime.getURL("/src/custom/scripts.json")).then(r => r.json());
+        for(let path of customScripts) {
+            try {
+                let source = await fetch(chrome.runtime.getURL(path)).then(r => r.text());
+                let customScript = document.createElement("script");
+                customScript.innerHTML = source;
+                document.head.appendChild(customScript);
+                console.log(`Loaded custom script ${path}`);
+            } catch(e) {
+                console.error(`Failed to load custom script ${path}`, e);
+            }
+        }
+    } catch(e) {
+        console.error("Failed to load custom scripts", e);
+    }
+
     (async () => {
         try {
             const additionalScripts = await fetch("https://oldtd.org/api/scripts", {
